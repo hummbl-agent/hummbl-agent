@@ -1,0 +1,63 @@
+name: Manual read-only review
+
+on:
+  workflow_dispatch:
+    inputs:
+      target_repository:
+        description: "Allowlisted OWNER/REPO target"
+        required: true
+        type: string
+      pull_request:
+        description: "Pull request number"
+        required: true
+        type: string
+
+permissions:
+  contents: read
+  pull-requests: read
+
+concurrency:
+  group: independent-review-${{ inputs.target_repository }}-${{ inputs.pull_request }}
+  cancel-in-progress: false
+
+jobs:
+  collect:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - name: Checkout reviewer control plane
+        uses: actions/checkout@v4
+
+      - name: Validate allowlisted target and read-only policy
+        env:
+          TARGET_REPOSITORY: ${{ inputs.target_repository }}
+          PULL_REQUEST: ${{ inputs.pull_request }}
+        run: |
+          node - <<'NODE'
+          const fs = require('node:fs');
+          const policy = JSON.parse(fs.readFileSync('config/review-policy.json', 'utf8'));
+          const repo = process.env.TARGET_REPOSITORY;
+          const pr = Number(process.env.PULL_REQUEST);
+          if (!policy.allowed_repositories.includes(repo)) throw new Error(`target is not allowlisted: ${repo}`);
+          if (!Number.isInteger(pr) || pr < 1) throw new Error('pull request must be a positive integer');
+          if (policy.mode !== 'read_only' || policy.authority.can_comment || policy.authority.can_approve || policy.authority.can_merge || policy.authority.can_resolve_threads) {
+            throw new Error('review policy is not safely read-only');
+          }
+          NODE
+
+      - name: Stagger review start
+        run: sleep 2
+
+      - name: Collect SHA-bound review packet
+        env:
+          GH_TOKEN: ${{ github.token }}
+          TARGET_REPOSITORY: ${{ inputs.target_repository }}
+          PULL_REQUEST: ${{ inputs.pull_request }}
+        run: node scripts/collect-review-packet.mjs --repo "$TARGET_REPOSITORY" --pr "$PULL_REQUEST" > review-packet.json
+
+      - name: Upload read-only packet
+        uses: actions/upload-artifact@v4
+        with:
+          name: review-packet-${{ inputs.target_repository }}-${{ inputs.pull_request }}
+          path: review-packet.json
+          if-no-files-found: error
