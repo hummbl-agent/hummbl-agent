@@ -1,0 +1,73 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://github.com/hummbl-agent/hummbl-agent/blob/main/schemas/review-packet.schema.json",
+  "title": "HUMMBL Independent Review Packet",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["schema_version", "target", "review_context", "evidence", "findings"],
+  "properties": {
+    "schema_version": {"const": "review-packet.v1"},
+    "target": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["repository", "pull_request", "base_sha", "head_sha"],
+      "properties": {
+        "repository": {"type": "string", "pattern": "^[^/\\s]+/[^/\\s]+$"},
+        "pull_request": {"type": "integer", "minimum": 1},
+        "base_sha": {"type": "string", "pattern": "^[0-9a-f]{40}$"},
+        "head_sha": {"type": "string", "pattern": "^[0-9a-f]{40}$"},
+        "url": {"type": "string", "format": "uri"}
+      }
+    },
+    "review_context": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["reviewer_identity", "mode", "generated_at"],
+      "properties": {
+        "reviewer_identity": {"type": "string", "minLength": 1},
+        "mode": {"enum": ["fixture", "read_only", "write_review"]},
+        "generated_at": {"type": "string", "format": "date-time"},
+        "model": {"type": "string"},
+        "limitations": {"type": "array", "items": {"type": "string"}}
+      }
+    },
+    "evidence": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["id", "kind", "source", "directness", "authority"],
+        "properties": {
+          "id": {"type": "string", "pattern": "^E-[0-9]{3}$"},
+          "kind": {"enum": ["diff", "file", "issue", "review", "check", "receipt", "fixture"]},
+          "source": {"type": "string", "minLength": 1},
+          "directness": {"enum": ["direct", "indirect", "context_only"]},
+          "authority": {"enum": ["repository", "github", "ci", "operator", "fixture", "unknown"]},
+          "observed_at": {"type": "string", "format": "date-time"},
+          "sha": {"type": "string"},
+          "notes": {"type": "string"}
+        }
+      }
+    },
+    "findings": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["id", "severity", "title", "evidence_ids", "disposition", "confidence"],
+        "properties": {
+          "id": {"type": "string", "pattern": "^F-[0-9]{3}$"},
+          "severity": {"enum": ["critical", "high", "medium", "low", "informational"]},
+          "title": {"type": "string", "minLength": 1},
+          "description": {"type": "string"},
+          "path": {"type": "string"},
+          "line": {"type": "integer", "minimum": 1},
+          "evidence_ids": {"type": "array", "items": {"type": "string", "pattern": "^E-[0-9]{3}$"}, "minItems": 1},
+          "disposition": {"enum": ["actionable", "accepted_risk", "not_reproducible", "out_of_scope", "duplicate"]},
+          "confidence": {"enum": ["high", "medium", "low"]},
+          "limitations": {"type": "array", "items": {"type": "string"}}
+        }
+      }
+    }
+  }
+}
