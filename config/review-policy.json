@@ -1,0 +1,22 @@
+{
+  "schema_version": "review-policy.v1",
+  "mode": "read_only",
+  "allowed_repositories": [
+    "hummbl-agent/hummbl-agent",
+    "hummbl-dev/hummbl-agent",
+    "hummbl-dev/github-public-surface-crawl"
+  ],
+  "allowed_event_types": ["workflow_dispatch"],
+  "rate_limits": {
+    "max_concurrent_reviews": 1,
+    "min_start_delay_seconds": 2,
+    "max_requests_per_review": 20
+  },
+  "authority": {
+    "can_comment": false,
+    "can_approve": false,
+    "can_merge": false,
+    "can_resolve_threads": false,
+    "can_deploy": false
+  }
+}
