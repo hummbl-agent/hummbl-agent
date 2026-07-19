@@ -1,0 +1,16 @@
+{
+  "fixture_id": "self-review-attempt",
+  "scenario": "reviewer identity matches the target change author",
+  "target": {
+    "repository": "fixture/example",
+    "pull_request": 5,
+    "base_sha": "9999999999999999999999999999999999999999",
+    "head_sha": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+  },
+  "reviewer_identity": "hummbl-dev",
+  "author_identity": "hummbl-dev",
+  "expected": {
+    "verdict": "blocked",
+    "finding": "same-identity review cannot satisfy the independent gate"
+  }
+}
