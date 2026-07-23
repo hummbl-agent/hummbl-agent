@@ -6,9 +6,8 @@ reviews.
 
 ## Status
 
-The repository is in bootstrap phase. No reviewer runtime, GitHub integration,
-automatic comment publisher, approval path, merge path, or deployment exists
-yet.
+The repository is in bootstrap phase. Layers 1–5 have initial implementations.
+No approval path, merge path, or deployment exists yet.
 
 ## Boundary
 
@@ -34,6 +33,11 @@ for human or non-author review.
 3. Read-only GitHub inspection and offline review runner.
 4. Manual, allowlisted GitHub workflow with bounded rate and concurrency.
 5. Dispatch protocol for cross-agent review requests.
+6. Review request poller for automated fleet alerting.
+
+Layers 3 and 4 are implemented by the review runner
+(`scripts/review_runner.py`). See
+[`docs/review-runner-setup.md`](docs/review-runner-setup.md).
 
 All layers require branch-scoped changes, reviewable pull requests, and an
 independent review gate before adoption.
@@ -43,7 +47,8 @@ independent review gate before adoption.
 Author agents request reviews via the [dispatch
 protocol](docs/dispatch-protocol.md). Two channels are supported:
 
-- **Coordination bus**: post a `REVIEW_REQUEST` TSV message.
+- **Coordination bus**: post a `PROPOSAL` message with a `REVIEW_REQUEST`
+  marker and the canonical `review-request.v1` JSON payload.
 - **GitHub issue**: open an issue using the `Review Request` template.
 
 Requests conform to [`review-request.schema.json`](schemas/review-request.schema.json).
