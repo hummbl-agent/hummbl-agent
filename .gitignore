@@ -7,3 +7,4 @@ artifacts/
 receipts/
 node_modules/
 dist/
+.poller-state.json

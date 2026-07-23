@@ -42,7 +42,8 @@ independent review gate before adoption.
 ## Review request poller
 
 A stdlib-only Python script (`scripts/review_request_poller.py`) scans the
-coordination bus for pending `REVIEW_REQUEST` messages and posts `STATUS`
-alerts. Designed to run on a 5-minute schedule via Task Scheduler, launchd,
-or cron. See [`docs/poller-setup.md`](docs/poller-setup.md) for scheduling
-instructions.
+coordination bus for pending `REVIEW_REQUEST` messages and alerts the fleet
+on state transitions and bounded escalation intervals. Validated manually
+but **not deployment-authorized** — no recurring scheduled task is active.
+Defaults to dry-run (read-only). See [`docs/poller-setup.md`](docs/poller-setup.md)
+for details.
