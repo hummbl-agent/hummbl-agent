@@ -1,0 +1,18 @@
+{
+  "fixture_id": "stale-base",
+  "scenario": "review metadata and diff refer to different base commits",
+  "target": {
+    "repository": "fixture/example",
+    "pull_request": 2,
+    "base_sha": "3333333333333333333333333333333333333333",
+    "head_sha": "4444444444444444444444444444444444444444"
+  },
+  "evidence": [
+    {"id": "E-001", "kind": "diff", "source": "fixture/diff-base-5555", "directness": "direct", "authority": "fixture"},
+    {"id": "E-002", "kind": "review", "source": "fixture/review-base-3333", "directness": "direct", "authority": "fixture"}
+  ],
+  "expected": {
+    "verdict": "blocked",
+    "finding": "base SHA mismatch requires refreshed evidence"
+  }
+}
