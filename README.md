@@ -56,3 +56,11 @@ The reviewer validates, checks the repository allowlist, verifies
 non-circumvention (no same-model self-review), collects evidence, and emits a
 `review-receipt.v1` as a PR comment. See the full protocol at
 [`docs/dispatch-protocol.md`](docs/dispatch-protocol.md).
+
+## Review request poller
+
+A stdlib-only Python script (`scripts/review_request_poller.py`) scans the
+coordination bus for pending `REVIEW_REQUEST` messages and posts `STATUS`
+alerts as the `hummbl-agent` bus identity. Designed to run on a 5-minute
+schedule via Task Scheduler, launchd, or cron. See
+[`docs/poller-setup.md`](docs/poller-setup.md) for scheduling instructions.
