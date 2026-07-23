@@ -320,10 +320,13 @@ def load_state(state_path):
 
 
 def save_state(state_path, state):
-    """Save the poller state file."""
+    """Save the poller state file (atomic write via temp + rename)."""
     try:
-        with open(state_path, "w", encoding="utf-8") as f:
+        sp = Path(state_path)
+        temp_path = sp.with_suffix(sp.suffix + ".tmp")
+        with open(temp_path, "w", encoding="utf-8") as f:
             json.dump(state, f, indent=2)
+        temp_path.replace(sp)
         return True
     except (OSError, IOError) as e:
         print(f"ERROR: cannot write state file {state_path}: {e}", file=sys.stderr)
@@ -467,12 +470,20 @@ def format_alert_message(alerts):
     """Format the bus alert message for alerts that passed dedup."""
     lines = [f"REVIEW_REQUEST_ALERT count={len(alerts)}"]
     for a in alerts:
-        req = a["request"]
-        lines.append(
-            f"  {req['request_id']} repo={req.get('repo', '?')} "
-            f"pr={req.get('pr', '?')} reason={a['reason']} "
-            f"posted={req.get('bus_timestamp', '?')}"
-        )
+        if "request" in a:
+            req = a["request"]
+            lines.append(
+                f"  {req['request_id']} repo={req.get('repo', '?')} "
+                f"pr={req.get('pr', '?')} reason={a['reason']} "
+                f"posted={req.get('bus_timestamp', '?')}"
+            )
+        elif "completion" in a:
+            comp = a["completion"]
+            lines.append(
+                f"  {a['request_id']} repo={comp.get('repo', '?')} "
+                f"pr={comp.get('pr', '?')} reason={a['reason']} "
+                f"completed={comp.get('completed_at', '?')}"
+            )
     return "\n".join(lines)
 
 
@@ -562,14 +573,12 @@ def main():
         "--identity",
         type=str,
         default=BUS_IDENTITY,
-        help=f"Bus identity to use when posting (default: {BUS_IDENTITY}).",
+        choices=[BUS_IDENTITY],
+        help=f"Bus identity to use when posting (fixed: {BUS_IDENTITY}).",
     )
     args = parser.parse_args()
 
-    # --post overrides --dry-run default
-    post_mode = args.post and not args.dry_run if args.dry_run else args.post
-    # Actually: --dry-run is default True, so we need to handle this properly.
-    # If --post is given, we post. Otherwise dry-run.
+    # --post enables bus posting; default is dry-run (read-only).
     post_mode = args.post
 
     bus_path = find_bus_file(args.bus_path)
