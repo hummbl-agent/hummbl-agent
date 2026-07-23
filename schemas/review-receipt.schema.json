@@ -1,0 +1,45 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://github.com/hummbl-agent/hummbl-agent/blob/main/schemas/review-receipt.schema.json",
+  "title": "HUMMBL Independent Review Receipt",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["schema_version", "packet_sha256", "target", "reviewer", "result", "authority"],
+  "properties": {
+    "schema_version": {"const": "review-receipt.v1"},
+    "packet_sha256": {"type": "string", "pattern": "^[0-9a-f]{64}$"},
+    "target": {"$ref": "review-packet.schema.json#/properties/target"},
+    "reviewer": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["identity", "runtime", "generated_at"],
+      "properties": {
+        "identity": {"type": "string", "minLength": 1},
+        "runtime": {"type": "string", "minLength": 1},
+        "generated_at": {"type": "string", "format": "date-time"}
+      }
+    },
+    "result": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["verdict", "finding_count"],
+      "properties": {
+        "verdict": {"enum": ["pass", "findings", "blocked", "inconclusive"]},
+        "finding_count": {"type": "integer", "minimum": 0},
+        "summary": {"type": "string"}
+      }
+    },
+    "authority": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["mode", "can_approve", "can_merge", "can_resolve_threads"],
+      "properties": {
+        "mode": {"enum": ["fixture", "read_only", "write_review"]},
+        "can_approve": {"const": false},
+        "can_merge": {"const": false},
+        "can_resolve_threads": {"const": false},
+        "limitations": {"type": "array", "items": {"type": "string"}}
+      }
+    }
+  }
+}

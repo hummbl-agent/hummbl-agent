@@ -1,0 +1,86 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://github.com/hummbl-agent/hummbl-agent/blob/main/schemas/review-request.schema.json",
+  "title": "HUMMBL Review Request",
+  "description": "Request from an author agent to the independent reviewer. Triggers construction of a review-packet.v1 and emission of a review-receipt.v1.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["schema_version", "request_id", "target", "requested_mode", "author_identity", "requester_model", "author_provenance"],
+  "properties": {
+    "schema_version": {"const": "review-request.v1"},
+    "request_id": {
+      "type": "string",
+      "pattern": "^R-[0-9]{3}$",
+      "description": "Unique request identifier assigned by the author."
+    },
+    "target": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["repository", "pull_request", "base_sha", "head_sha"],
+      "properties": {
+        "repository": {"type": "string", "pattern": "^[^/\\s]+/[^/\\s]+$"},
+        "pull_request": {"type": "integer", "minimum": 1},
+        "base_sha": {"type": "string", "pattern": "^[0-9a-f]{40}$"},
+        "head_sha": {"type": "string", "pattern": "^[0-9a-f]{40}$"},
+        "url": {"type": "string", "format": "uri"}
+      }
+    },
+    "requested_mode": {
+      "enum": ["fixture", "read_only", "write_review"],
+      "description": "fixture = local deterministic only; read_only = live GitHub inspection, no write; write_review = allowlisted comment/review post."
+    },
+    "author_identity": {
+      "type": "string",
+      "minLength": 1,
+      "description": "GitHub login of the PR author. Must not match reviewer_identity."
+    },
+    "requester_model": {
+      "type": "string",
+      "minLength": 1,
+      "description": "Model name of the agent that authored the PR. Must be corroborated by author_provenance."
+    },
+    "author_provenance": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["bus_receipt_id", "bus_receipt_sender", "bus_receipt_timestamp"],
+      "properties": {
+        "bus_receipt_id": {
+          "type": "string",
+          "minLength": 1,
+          "description": "Bus receipt ID (nonce field) of a message proving the author's model identity. The reviewer verifies this receipt exists on the bus and that its sender and content corroborate requester_model."
+        },
+        "bus_receipt_sender": {
+          "type": "string",
+          "minLength": 1,
+          "description": "Bus sender identity for the provenance receipt."
+        },
+        "bus_receipt_timestamp": {
+          "type": "string",
+          "format": "date-time",
+          "description": "Timestamp of the provenance receipt."
+        }
+      },
+      "description": "Authoritative provenance for the requester_model field. Binds the author's model declaration to a verifiable bus receipt. The reviewer must verify this receipt exists and matches; if verification fails, the review is blocked with reason: unverified_provenance."
+    },
+    "review_focus": {
+      "type": "array",
+      "items": {"type": "string"},
+      "description": "Optional areas the author wants reviewed (e.g. security, schema, performance)."
+    },
+    "operator_waiver": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["granted", "reason"],
+      "properties": {
+        "granted": {"type": "boolean"},
+        "reason": {"type": "string", "minLength": 1}
+      },
+      "description": "Operator waiver for same-model review on low-risk changes. Not permitted for security, governance, schema, integration, or authority changes."
+    },
+    "requested_at": {
+      "type": "string",
+      "format": "date-time",
+      "description": "Timestamp the request was posted."
+    }
+  }
+}

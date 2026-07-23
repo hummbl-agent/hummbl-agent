@@ -1,0 +1,18 @@
+{
+  "fixture_id": "conflicting-evidence",
+  "scenario": "a repository claim conflicts with a current test result",
+  "target": {
+    "repository": "fixture/example",
+    "pull_request": 4,
+    "base_sha": "7777777777777777777777777777777777777777",
+    "head_sha": "8888888888888888888888888888888888888888"
+  },
+  "evidence": [
+    {"id": "E-001", "kind": "file", "source": "README.md#claim", "directness": "direct", "authority": "repository"},
+    {"id": "E-002", "kind": "check", "source": "ci/test-security-failure", "directness": "direct", "authority": "ci"}
+  ],
+  "expected": {
+    "verdict": "inconclusive",
+    "finding": "contradictory evidence must be surfaced and adjudicated"
+  }
+}
