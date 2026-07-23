@@ -60,8 +60,10 @@ import hashlib
 import json
 import os
 import re
+import shutil
 import subprocess
 import sys
+import tempfile
 from datetime import datetime, timezone
 from pathlib import Path
 
@@ -70,7 +72,12 @@ from pathlib import Path
 # ---------------------------------------------------------------------------
 
 REVIEWER_IDENTITY_DEFAULT = "hummbl-agent"
-REVIEWER_RUNTIME = "review_runner.py v0.1"
+REVIEWER_RUNTIME = "review_runner.py v0.2"
+
+# Bus file path for provenance verification
+BUS_PATHS = [
+    Path.home() / "PROJECTS" / "founder-mode" / "_state" / "coordination" / "messages.tsv",
+]
 
 SHA40_RE = re.compile(r"^[0-9a-f]{40}$")
 SECRET_PATTERNS = [
@@ -112,7 +119,7 @@ def validate_request(request):
         return False, ["request is not a JSON object"]
 
     required = ["schema_version", "request_id", "target", "requested_mode",
-                "author_identity", "requester_model"]
+                "author_identity", "requester_model", "author_provenance"]
     for field in required:
         if field not in request:
             errors.append(f"missing required field: {field}")
@@ -140,17 +147,83 @@ def validate_request(request):
     if not re.match(r"^R-\d{3}$", rid):
         errors.append(f"request_id must match R-NNN, got '{rid}'")
 
+    # Validate author_provenance structure
+    provenance = request.get("author_provenance", {})
+    if not isinstance(provenance, dict):
+        errors.append("author_provenance must be an object")
+    else:
+        for pf in ["bus_receipt_id", "bus_receipt_sender", "bus_receipt_timestamp"]:
+            if not provenance.get(pf):
+                errors.append(f"missing author_provenance field: {pf}")
+
     return len(errors) == 0, errors
+
+
+# ---------------------------------------------------------------------------
+# Provenance verification
+# ---------------------------------------------------------------------------
+
+def verify_provenance(request):
+    """Verify author_provenance by checking the bus for the referenced receipt.
+
+    Returns (verified, reason).
+    """
+    provenance = request.get("author_provenance", {})
+    receipt_id = provenance.get("bus_receipt_id", "")
+    expected_sender = provenance.get("bus_receipt_sender", "")
+    expected_timestamp = provenance.get("bus_receipt_timestamp", "")
+
+    if not receipt_id or not expected_sender:
+        return False, "missing provenance fields"
+
+    # Find the bus file
+    bus_path = None
+    for p in BUS_PATHS:
+        if Path(p).is_file():
+            bus_path = Path(p)
+            break
+
+    if bus_path is None:
+        return False, "bus file not found for provenance verification"
+
+    try:
+        with open(bus_path, "r", encoding="utf-8", errors="replace") as f:
+            for line in f:
+                line = line.strip()
+                if not line or line.startswith("#"):
+                    continue
+                # Check if this line contains the receipt ID
+                if receipt_id not in line:
+                    continue
+                parts = line.split("\t")
+                if len(parts) < 5:
+                    continue
+                timestamp = parts[0]
+                sender = parts[1]
+                # Verify sender and timestamp match
+                if sender == expected_sender and timestamp == expected_timestamp:
+                    return True, "provenance verified"
+                else:
+                    return False, f"provenance mismatch: expected sender={expected_sender} timestamp={expected_timestamp}, got sender={sender} timestamp={timestamp}"
+    except (OSError, IOError):
+        return False, "cannot read bus file"
+
+    return False, f"provenance receipt {receipt_id} not found on bus"
 
 
 # ---------------------------------------------------------------------------
 # Non-circumvention check
 # ---------------------------------------------------------------------------
 
-def check_non_circumvention(request, reviewer_identity, reviewer_model):
+def check_non_circumvention(request, reviewer_identity, reviewer_model,
+                            provenance_verified=False):
     """Check that the reviewer is independent from the author.
 
     Returns (passed, reason).
+
+    The requester_model field is only trusted for the same-model check if
+    provenance_verified is True. If provenance is not verified, the model
+    check is skipped but a limitation is noted.
     """
     author = request.get("author_identity", "")
     author_model = request.get("requester_model", "")
@@ -159,12 +232,17 @@ def check_non_circumvention(request, reviewer_identity, reviewer_model):
     if author and reviewer_identity and author == reviewer_identity:
         return False, f"same-identity: author '{author}' == reviewer '{reviewer_identity}'"
 
-    # Same model, different identity → blocked unless waiver
-    if author_model and reviewer_model and author_model == reviewer_model:
-        waiver = request.get("operator_waiver", {})
-        if waiver and waiver.get("granted"):
-            return True, f"same-model waived: {waiver.get('reason', 'no reason given')}"
-        return False, f"same-model: author model '{author_model}' == reviewer model '{reviewer_model}'"
+    # Same model check — only if provenance is verified
+    if provenance_verified and author_model and reviewer_model:
+        if author_model == reviewer_model:
+            waiver = request.get("operator_waiver", {})
+            if waiver and waiver.get("granted"):
+                return True, f"same-model waived: {waiver.get('reason', 'no reason given')}"
+            return False, f"same-model: author model '{author_model}' == reviewer model '{reviewer_model}'"
+    elif not provenance_verified and author_model and reviewer_model:
+        if author_model == reviewer_model:
+            # Can't trust the model match without provenance, but flag it
+            return True, f"independent (WARNING: unverified provenance, model match unconfirmed)"
 
     return True, "independent"
 
@@ -173,8 +251,8 @@ def check_non_circumvention(request, reviewer_identity, reviewer_model):
 # GitHub evidence collection (read-only)
 # ---------------------------------------------------------------------------
 
-def gh_api(endpoint, reviewer_identity=REVIEWER_IDENTITY_DEFAULT):
-    """Call GitHub API read-only using the hummbl-agent identity.
+def gh_api(endpoint, config_dir=None):
+    """Call GitHub API read-only using isolated credentials.
 
     Returns parsed JSON or None on error.
     """
@@ -182,7 +260,7 @@ def gh_api(endpoint, reviewer_identity=REVIEWER_IDENTITY_DEFAULT):
         result = subprocess.run(
             ["gh", "api", endpoint],
             capture_output=True, text=True, timeout=30,
-            env={**os.environ, "GH_TOKEN": _get_gh_token(reviewer_identity)},
+            env=gh_env(config_dir),
         )
         if result.returncode != 0:
             return None
@@ -206,7 +284,7 @@ def _get_gh_token(identity):
     return os.environ.get("GH_TOKEN", "")
 
 
-def collect_evidence(repo, pr_number, base_sha, head_sha):
+def collect_evidence(repo, pr_number, base_sha, head_sha, config_dir=None):
     """Collect read-only evidence from GitHub.
 
     Returns a list of evidence dicts conforming to review-packet.v1.
@@ -222,7 +300,7 @@ def collect_evidence(repo, pr_number, base_sha, head_sha):
     now = utc_now_iso()
 
     # 1. PR metadata
-    pr_data = gh_api(f"repos/{repo}/pulls/{pr_number}")
+    pr_data = gh_api(f"repos/{repo}/pulls/{pr_number}", config_dir=config_dir)
     if pr_data:
         evidence.append({
             "id": next_eid(),
@@ -265,7 +343,7 @@ def collect_evidence(repo, pr_number, base_sha, head_sha):
             ["gh", "api", f"repos/{repo}/pulls/{pr_number}",
              "-H", "Accept: application/vnd.github.diff"],
             capture_output=True, text=True, timeout=30,
-            env={**os.environ, "GH_TOKEN": _get_gh_token(REVIEWER_IDENTITY_DEFAULT)},
+            env=gh_env(config_dir),
         )
         if result.returncode == 0 and result.stdout:
             diff_text = result.stdout
@@ -283,7 +361,7 @@ def collect_evidence(repo, pr_number, base_sha, head_sha):
         pass
 
     # 3. Changed files
-    files_data = gh_api(f"repos/{repo}/pulls/{pr_number}/files")
+    files_data = gh_api(f"repos/{repo}/pulls/{pr_number}/files", config_dir=config_dir)
     if files_data and isinstance(files_data, list):
         file_list = [f.get("filename", "?") for f in files_data]
         evidence.append({
@@ -297,7 +375,7 @@ def collect_evidence(repo, pr_number, base_sha, head_sha):
         })
 
     # 4. CI checks
-    checks_data = gh_api(f"repos/{repo}/commits/{head_sha}/check-runs")
+    checks_data = gh_api(f"repos/{repo}/commits/{head_sha}/check-runs", config_dir=config_dir)
     if checks_data and isinstance(checks_data, dict):
         runs = checks_data.get("check_runs", [])
         if runs:
@@ -633,15 +711,15 @@ def format_receipt_markdown(receipt, packet):
 # PR comment posting
 # ---------------------------------------------------------------------------
 
-def post_pr_comment(repo, pr_number, body, reviewer_identity):
-    """Post a comment on a PR using the hummbl-agent identity."""
+def post_pr_comment(repo, pr_number, body, config_dir=None):
+    """Post a comment on a PR using isolated credentials."""
     try:
         result = subprocess.run(
             ["gh", "pr", "comment", str(pr_number),
              "--repo", repo,
              "--body", body],
             capture_output=True, text=True, timeout=30,
-            env={**os.environ, "GH_TOKEN": _get_gh_token(reviewer_identity)},
+            env=gh_env(config_dir),
         )
         if result.returncode == 0:
             return True, None
@@ -672,41 +750,72 @@ def post_review_complete(request_id, repo, pr_number, verdict, reviewer_identity
 
 
 # ---------------------------------------------------------------------------
-# Auth switch
+# Auth isolation (GH_CONFIG_DIR)
 # ---------------------------------------------------------------------------
 
-def switch_auth(identity):
-    """Switch gh auth to the specified identity. Returns (success, error)."""
+def setup_isolated_auth(identity):
+    """Set up isolated per-process GitHub credentials.
+
+    Creates a temporary directory with a hosts.yml containing only the
+    specified identity's token. Returns (config_dir, error).
+
+    This does NOT modify global CLI state. The caller must pass
+    GH_CONFIG_DIR=<config_dir> to all gh subprocess calls and call
+    cleanup_isolated_auth(config_dir) when done.
+    """
+    token = _get_gh_token(identity)
+    if not token:
+        return None, f"cannot retrieve token for identity '{identity}'"
+
     try:
-        result = subprocess.run(
-            ["gh", "auth", "switch", "-u", identity],
-            capture_output=True, text=True, timeout=15,
+        config_dir = tempfile.mkdtemp(prefix="gh-reviewer-")
+        # Write a minimal gh hosts.yml
+        hosts_path = Path(config_dir) / "hosts.yml"
+        hosts_content = (
+            f"github.com:\n"
+            f"    oauth_token: {token}\n"
+            f"    user: {identity}\n"
+            f"    git_protocol: https\n"
         )
-        if result.returncode == 0:
-            return True, None
-        return False, result.stderr.strip()
-    except (subprocess.TimeoutExpired, OSError) as e:
-        return False, str(e)
+        with open(hosts_path, "w", encoding="utf-8") as f:
+            f.write(hosts_content)
+        return config_dir, None
+    except (OSError, IOError) as e:
+        return None, str(e)
 
 
-def restore_auth(previous_identity):
-    """Switch gh auth back to the previous identity."""
-    if previous_identity:
-        switch_auth(previous_identity)
+def cleanup_isolated_auth(config_dir):
+    """Remove the temporary GH_CONFIG_DIR directory."""
+    if config_dir and Path(config_dir).exists():
+        try:
+            shutil.rmtree(config_dir)
+        except (OSError, IOError):
+            pass  # Best-effort cleanup
 
 
-def get_current_auth():
-    """Get the currently active gh auth account."""
+def gh_env(config_dir=None, extra=None):
+    """Build environment for gh subprocess calls with isolated config dir."""
+    env = dict(os.environ)
+    if config_dir:
+        env["GH_CONFIG_DIR"] = config_dir
+        # Also set GH_TOKEN for API calls that use it directly
+        token = _read_token_from_config(config_dir)
+        if token:
+            env["GH_TOKEN"] = token
+    if extra:
+        env.update(extra)
+    return env
+
+
+def _read_token_from_config(config_dir):
+    """Read the oauth_token from a hosts.yml file."""
     try:
-        result = subprocess.run(
-            ["gh", "auth", "status"],
-            capture_output=True, text=True, timeout=10,
-        )
-        # Parse "Active account: true" line to find the account name
-        for line in result.stdout.split("\n"):
-            if "Logged in to github.com account" in line:
-                return line.split("account")[1].strip().split()[0]
-    except (subprocess.TimeoutExpired, OSError):
+        hosts_path = Path(config_dir) / "hosts.yml"
+        with open(hosts_path, "r", encoding="utf-8") as f:
+            for line in f:
+                if "oauth_token:" in line:
+                    return line.split("oauth_token:")[1].strip()
+    except (OSError, IOError):
         pass
     return None
 
@@ -775,6 +884,7 @@ def main():
             "requested_mode": args.mode,
             "author_identity": args.author_identity or "",
             "requester_model": args.requester_model or "",
+            "author_provenance": {},  # CLI mode: no provenance, will fail verification
         }
 
     # --- Validate request ---
@@ -792,16 +902,31 @@ def main():
     head_sha = target["head_sha"]
     mode = args.mode
 
+    # --- Provenance verification (skip in fixture mode) ---
+    provenance_verified = False
+    provenance_reason = ""
+    if mode != "fixture":
+        provenance_verified, provenance_reason = verify_provenance(request)
+        print(f"Provenance: {'VERIFIED' if provenance_verified else 'UNVERIFIED'} — {provenance_reason}",
+              file=sys.stderr)
+        if not provenance_verified and not args.dry_run:
+            print("ERROR: author provenance could not be verified. "
+                  "Review blocked. Use --dry-run to proceed without verification.",
+                  file=sys.stderr)
+            sys.exit(2)
+
     # --- Non-circumvention check ---
     nc_passed, nc_reason = check_non_circumvention(
-        request, args.reviewer_identity, args.reviewer_model or ""
+        request, args.reviewer_identity, args.reviewer_model or "",
+        provenance_verified=provenance_verified
     )
     print(f"Non-circumvention: {'PASS' if nc_passed else 'BLOCKED'} — {nc_reason}",
           file=sys.stderr)
 
     # --- Fixture mode: no GitHub, no auth ---
     if mode == "fixture":
-        fixture_findings = run_fixture_checks()
+        fixture_results = run_fixture_checks()
+        fixture_findings = [f for f in fixture_results if f.get("verdict") != "pass"]
         evidence = [{
             "id": "E-001",
             "kind": "fixture",
@@ -809,7 +934,7 @@ def main():
             "directness": "direct",
             "authority": "fixture",
             "observed_at": utc_now_iso(),
-            "notes": f"{len(fixture_findings)} fixture finding(s)",
+            "notes": f"{len(fixture_results)} fixture check(s), {len(fixture_findings)} finding(s)",
         }]
         review_context = {
             "reviewer_identity": args.reviewer_identity,
@@ -828,18 +953,19 @@ def main():
         _output_results(packet, receipt, args)
         sys.exit(0)
 
-    # --- read_only / write_review: auth switch + evidence collection ---
-    previous_auth = get_current_auth()
-
+    # --- read_only / write_review: isolated auth + evidence collection ---
+    config_dir = None
     if not args.dry_run and mode in ("read_only", "write_review"):
-        print(f"Switching auth to {args.reviewer_identity}...", file=sys.stderr)
-        success, err = switch_auth(args.reviewer_identity)
-        if not success:
-            print(f"ERROR: auth switch failed: {err}", file=sys.stderr)
+        print(f"Setting up isolated auth for {args.reviewer_identity}...", file=sys.stderr)
+        config_dir, err = setup_isolated_auth(args.reviewer_identity)
+        if config_dir is None:
+            print(f"ERROR: isolated auth setup failed: {err}", file=sys.stderr)
             sys.exit(2)
+        print(f"Isolated auth ready (GH_CONFIG_DIR={config_dir})", file=sys.stderr)
 
     try:
-        evidence = collect_evidence(repo, pr_number, base_sha, head_sha)
+        evidence = collect_evidence(repo, pr_number, base_sha, head_sha,
+                                    config_dir=config_dir)
 
         # Check for SHA mismatches in evidence
         sha_mismatches = [
@@ -847,10 +973,10 @@ def main():
             if "SHA_MISMATCH" in ev.get("notes", "")
         ]
 
-        # Secret scan
+        # Secret scan — these are PR-specific findings
         secret_findings = scan_evidence_for_secrets(evidence)
 
-        # Prompt injection scan on evidence notes
+        # Prompt injection scan on evidence notes — PR-specific findings
         injection_findings = []
         for ev in evidence:
             notes = ev.get("notes", "")
@@ -863,10 +989,13 @@ def main():
                     "confidence": "medium",
                 })
 
-        # Also run fixture checks (always)
-        fixture_findings = run_fixture_checks()
+        # Run fixture checks as validation (not as PR findings)
+        fixture_results = run_fixture_checks()
+        fixture_failures = [f for f in fixture_results if f.get("verdict") != "pass"]
+        fixture_findings = [f for f in fixture_results if f.get("verdict") not in ("pass", None)]
 
-        all_findings = secret_findings + injection_findings + fixture_findings
+        # PR-specific findings only — fixture findings are validation results
+        pr_findings = secret_findings + injection_findings
 
         review_context = {
             "reviewer_identity": args.reviewer_identity,
@@ -879,10 +1008,23 @@ def main():
             review_context["limitations"].append(
                 f"non-circumvention: {nc_reason}"
             )
+        if not provenance_verified:
+            review_context["limitations"].append(
+                f"provenance: {provenance_reason}"
+            )
+        if fixture_failures:
+            review_context["limitations"].append(
+                f"fixture validation: {len(fixture_failures)} failure(s)"
+            )
 
-        packet = build_packet(target, review_context, evidence, all_findings)
+        # Include fixture findings in the packet for transparency, but
+        # separate them from PR findings in the verdict computation
+        all_findings_for_packet = pr_findings + fixture_findings
+        packet = build_packet(target, review_context, evidence, all_findings_for_packet)
+
+        # Verdict is computed from PR-specific findings only, not fixture findings
         verdict, summary = compute_verdict(
-            all_findings, nc_passed, sha_mismatches
+            pr_findings, nc_passed, sha_mismatches
         )
 
         limitations = []
@@ -890,10 +1032,12 @@ def main():
             limitations.append("base/head SHA mismatch detected")
         if not evidence:
             limitations.append("no evidence collected — GitHub API may have failed")
+        if fixture_failures:
+            limitations.append(f"{len(fixture_failures)} fixture validation failure(s)")
 
         receipt = build_receipt(
             packet, args.reviewer_identity, args.reviewer_model,
-            verdict, len(all_findings), summary, mode,
+            verdict, len(pr_findings), summary, mode,
             limitations=limitations
         )
 
@@ -906,7 +1050,7 @@ def main():
             print(f"\nPosting receipt as PR comment on {repo}#{pr_number}...",
                   file=sys.stderr)
             success, err = post_pr_comment(
-                repo, pr_number, comment_body, args.reviewer_identity
+                repo, pr_number, comment_body, config_dir=config_dir
             )
             if success:
                 print("PR comment posted.", file=sys.stderr)
@@ -925,10 +1069,10 @@ def main():
                 print(f"WARNING: bus post failed: {err}", file=sys.stderr)
 
     finally:
-        # Restore auth
-        if not args.dry_run and mode in ("read_only", "write_review"):
-            restore_auth(previous_auth)
-            print(f"Auth restored to {previous_auth}.", file=sys.stderr)
+        # Cleanup isolated auth — no global state to restore
+        if config_dir:
+            cleanup_isolated_auth(config_dir)
+            print(f"Isolated auth cleaned up.", file=sys.stderr)
 
     sys.exit(0)
 
