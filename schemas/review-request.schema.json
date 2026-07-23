@@ -5,7 +5,7 @@
   "description": "Request from an author agent to the independent reviewer. Triggers construction of a review-packet.v1 and emission of a review-receipt.v1.",
   "type": "object",
   "additionalProperties": false,
-  "required": ["schema_version", "request_id", "target", "requested_mode", "author_identity", "requester_model"],
+  "required": ["schema_version", "request_id", "target", "requested_mode", "author_identity", "requester_model", "author_provenance"],
   "properties": {
     "schema_version": {"const": "review-request.v1"},
     "request_id": {
@@ -37,7 +37,30 @@
     "requester_model": {
       "type": "string",
       "minLength": 1,
-      "description": "Model name of the agent that authored the PR. Used for same-model self-review detection."
+      "description": "Model name of the agent that authored the PR. Must be corroborated by author_provenance."
+    },
+    "author_provenance": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["bus_receipt_id", "bus_receipt_sender", "bus_receipt_timestamp"],
+      "properties": {
+        "bus_receipt_id": {
+          "type": "string",
+          "minLength": 1,
+          "description": "Bus receipt ID (nonce field) of a message proving the author's model identity. The reviewer verifies this receipt exists on the bus and that its sender and content corroborate requester_model."
+        },
+        "bus_receipt_sender": {
+          "type": "string",
+          "minLength": 1,
+          "description": "Bus sender identity for the provenance receipt."
+        },
+        "bus_receipt_timestamp": {
+          "type": "string",
+          "format": "date-time",
+          "description": "Timestamp of the provenance receipt."
+        }
+      },
+      "description": "Authoritative provenance for the requester_model field. Binds the author's model declaration to a verifiable bus receipt. The reviewer must verify this receipt exists and matches; if verification fails, the review is blocked with reason: unverified_provenance."
     },
     "review_focus": {
       "type": "array",
