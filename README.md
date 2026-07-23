@@ -33,6 +33,12 @@ for human or non-author review.
 2. Synthetic adversarial fixtures and threat model.
 3. Read-only GitHub inspection and offline review runner.
 4. Manual, allowlisted GitHub workflow with bounded rate and concurrency.
+5. Dispatch protocol for cross-agent review requests.
+6. Review request poller for automated fleet alerting.
+
+Layers 3 and 4 are implemented by the review runner
+(`scripts/review_runner.py`). See
+[`docs/review-runner-setup.md`](docs/review-runner-setup.md).
 
 All layers require branch-scoped changes, reviewable pull requests, and an
 independent review gate before adoption.
