@@ -33,6 +33,16 @@ for human or non-author review.
 2. Synthetic adversarial fixtures and threat model.
 3. Read-only GitHub inspection and offline review runner.
 4. Manual, allowlisted GitHub workflow with bounded rate and concurrency.
+5. Dispatch protocol for cross-agent review requests.
+6. Review request poller for automated fleet alerting.
 
 All layers require branch-scoped changes, reviewable pull requests, and an
 independent review gate before adoption.
+
+## Review request poller
+
+A stdlib-only Python script (`scripts/review_request_poller.py`) scans the
+coordination bus for pending `REVIEW_REQUEST` messages and posts `STATUS`
+alerts. Designed to run on a 5-minute schedule via Task Scheduler, launchd,
+or cron. See [`docs/poller-setup.md`](docs/poller-setup.md) for scheduling
+instructions.
